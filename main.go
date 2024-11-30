@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -79,6 +80,17 @@ type Line struct {
 	Val  string
 }
 
+func lines(s string) []Line {
+	lines := strings.Split(s, "\n")
+	res := make([]Line, len(lines))
+
+	for i, line := range lines {
+		res[i] = Line{i, line}
+	}
+
+	return res
+}
+
 func comments(s string) []Line {
 
 	res := make([]Line, 0)
@@ -95,18 +107,30 @@ func comments(s string) []Line {
 	return res
 }
 
-func IsAssert(comment string) bool {
-	return strings.Contains(comment, "assert")
-}
-
-func IsGobraComment(comment string) bool {
+func TrimGoComment(comment string) (string, bool) {
 	comment = strings.TrimSpace(comment)
 	comment, ok := strings.CutPrefix(comment, "//")
 	if !ok {
-		return false
+		return "", false
 	}
 	comment = strings.TrimSpace(comment)
 	comment, ok = strings.CutPrefix(comment, "@")
+	return comment, ok
+}
+
+func IsAssert(comment string) bool {
+	com, ok := TrimGoComment(comment)
+	if ok {
+		comment = com
+	}
+
+	comment = strings.TrimSpace(comment)
+
+	return strings.HasPrefix(comment, "assert")
+}
+
+func IsGobraComment(comment string) bool {
+	_, ok := TrimGoComment(comment)
 	return ok
 }
 
@@ -135,12 +159,16 @@ func FilesWithHeader(dir string) ([]string, error) {
 	return res, nil
 }
 
+func ChopOne(s string, indent int) string {
+	oldline := strings.ReplaceAll(s, "\t", "")
+	return strings.Repeat("\t", indent) + "//chop! " + strings.ReplaceAll(oldline, "@", "#")
+}
+
 func ChopLine(s string, line int) string {
 	lines := strings.Split(s, "\n")
 	indent := strings.Count(lines[line], "\t")
 
-	oldline := strings.ReplaceAll(lines[line], "\t", "")
-	lines[line] = strings.Repeat("\t", indent) + "//chop! " + strings.ReplaceAll(oldline, "@", "#")
+	lines[line] = ChopOne(lines[line], indent)
 	return strings.Join(lines, "\n")
 }
 
@@ -152,7 +180,8 @@ type Ctx struct {
 	/// where we output results
 	outDir string
 
-	ei ExecInfo
+	ei      ExecInfo
+	tryChop func(string) bool
 }
 
 func NewCtx(pkg, outdir string, ei ExecInfo) (Ctx, error) {
@@ -182,6 +211,9 @@ func NewCtx(pkg, outdir string, ei ExecInfo) (Ctx, error) {
 		ei:      ei,
 		files:   files,
 		outDir:  outdir,
+		tryChop: func(s string) bool {
+			return IsGobraComment(s) && IsAssert(s)
+		},
 	}, nil
 }
 
@@ -254,10 +286,7 @@ func (r *Ctx) tryToRemoveLine(duration time.Duration, fileName string, contents 
 func (r *Ctx) singlePassFile(duration time.Duration, fileName string, contents string, comments []Line) (int, bool, error) {
 
 	for _, comment := range comments {
-		if !IsGobraComment(comment.Val) {
-			continue
-		}
-		if !IsAssert(comment.Val) {
+		if !r.tryChop(comment.Val) {
 			continue
 		}
 
@@ -280,9 +309,31 @@ func (r *Ctx) singlePassFile(duration time.Duration, fileName string, contents s
 	return 0, false, nil
 }
 
+func findLine(lines []Line, lnum int) int {
+
+	cut := -1
+	for i, comment := range lines {
+		if comment.Lnum == lnum {
+			cut = i
+		}
+	}
+	return cut
+}
+
+func rotateAndDrop(lines []Line, lnum int) []Line {
+	cut := findLine(lines, lnum)
+	if cut == -1 {
+		fmt.Printf("what? cut was -1 but there should be a comment withthis line num: %v\n", lnum)
+		return lines
+	}
+
+	return append(lines[cut+1:], lines[:cut]...)
+}
+
 func (r *Ctx) maximallyReduce(duration time.Duration, fileName string) (string, error) {
 	contents := r.files[fileName]
-	comments := comments(contents)
+	// comments := comments(contents)
+	comments := lines(contents)
 	nRemoved := 0
 	for {
 		line, ok, err := r.singlePassFile(duration, fileName, contents, comments)
@@ -297,22 +348,13 @@ func (r *Ctx) maximallyReduce(duration time.Duration, fileName string) (string, 
 		nRemoved += 1
 
 		contents = ChopLine(contents, line)
+
 		r.WriteOut(fileName+".working", contents)
 		lines := strings.Split(contents, "\n")
 		fmt.Printf("GOOD: removing %v in %v would be fine: %v\n", line+1, fileName, lines[line])
 		fmt.Printf("we now have removed %v lines\n", nRemoved)
 
-		cut := -1
-		for i, comment := range comments {
-			if comment.Lnum == line {
-				cut = i
-			}
-		}
-		if cut == -1 {
-			fmt.Printf("what? cut was -1 but there should be a comment withthis line num: %v\n", line)
-			continue
-		}
-		comments = append(comments[cut+1:], comments[:cut+1]...)
+		comments = rotateAndDrop(comments, line)
 		// ln := make([]int, 0, len(comments))
 		// for _, c := range comments {
 		// 	ln = append(ln, c.Lnum)
@@ -329,6 +371,7 @@ func main() {
 	baselineFlag := flag.String("baseline", "", "how many seconds we wait for a good answer. the default is time(no change) + 10%")
 	javaFlag := flag.String("java", "java", "")
 	outputDirFlag := flag.String("output", ".", "output directory")
+	pattern := flag.String("pattern", "", "pattern of lines to try to chop")
 	flag.Parse()
 
 	pkg := flag.Arg(0)
@@ -362,6 +405,21 @@ func main() {
 		os.Exit(1)
 	}
 
+	if *pattern != "" {
+		regex, err := regexp.Compile(*pattern)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+		r.tryChop = func(s string) bool {
+			return regex.MatchString(s)
+		}
+	}
+
+	if len(r.files) == 0 {
+		fmt.Println("WARNING: no files found")
+	}
+
 	duration, err := time.ParseDuration(*baselineFlag)
 	if err != nil {
 		fmt.Println("running gobra on baseline")
@@ -375,6 +433,7 @@ func main() {
 	fmt.Printf("using duration %v\n", duration)
 
 	for file := range r.files {
+		fmt.Println("reducing", file)
 		r.maximallyReduce(duration, file)
 	}
 

@@ -14,21 +14,21 @@ type cs struct {
 func TestIsAssert(t *testing.T) {
 
 	cases := []cs{
-		cs{"//@assert true", true},
-		cs{"       //@assert true", true},
-		cs{"       //    @assert true", true},
-		cs{"   // @assert true", true},
-		cs{"// // @assert true", false},
-		cs{" // @ assert true", true},
-		cs{"// // #assert true", false},
-		cs{"// #assert true", false},
-		cs{"//#assert true", false},
-		cs{"assert", false},
-		cs{"//chop! //@assert true", false},
+		{"//@assert true", true},
+		{"       //@assert true", true},
+		{"       //    @assert true", true},
+		{"   // @assert true", true},
+		{"// // @assert true", false},
+		{" // @ assert true", true},
+		{"// // #assert true", false},
+		{"// #assert true", false},
+		{"//#assert true", false},
+		{"assert", false},
+		{"//chop! //@assert true", false},
 	}
 
 	for _, cs := range cases {
-		if m.IsGobraComment(cs.inpt) && m.IsAssert(cs.inpt) != cs.expected {
+		if (m.IsGobraComment(cs.inpt) && m.IsAssert(cs.inpt)) != cs.expected {
 			t.Fatalf("IsAssert(%v) != %v", cs.inpt, cs.expected)
 		}
 	}
