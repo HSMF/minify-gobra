@@ -194,13 +194,13 @@ func NewCtx(pkg, outdir string, ei ExecInfo) (Ctx, error) {
 	files := make(map[string]string)
 	filesWithHeader, err := FilesWithHeader(pkg)
 	if err != nil {
-		return Ctx{}, nil
+		return Ctx{}, err
 	}
 
 	for _, file := range filesWithHeader {
 		contents, err := os.ReadFile(filepath.Join(pkg, file))
 		if err != nil {
-			return Ctx{}, nil
+			return Ctx{}, err
 		}
 
 		files[file] = string(contents)
@@ -335,6 +335,16 @@ func (r *Ctx) maximallyReduce(duration time.Duration, fileName string) (string, 
 	// comments := comments(contents)
 	comments := lines(contents)
 	nRemoved := 0
+
+	candidates := 0
+	for _, line := range comments {
+		if r.tryChop(line.Val) {
+			candidates += 1
+		}
+	}
+
+	fmt.Printf("have %d candidates to remove in %s\n", candidates, fileName)
+
 	for {
 		line, ok, err := r.singlePassFile(duration, fileName, contents, comments)
 		if err != nil {
